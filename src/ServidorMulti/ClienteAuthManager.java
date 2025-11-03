@@ -44,4 +44,8 @@ public class ClienteAuthManager {
     public static boolean verificarCredenciales(String usuario, String password) {
         return password.equals(credenciales.get(usuario));
     }
+
+    public static boolean existeUsuario(String usuario) {
+        return credenciales.containsKey(usuario);
+    }
 }
