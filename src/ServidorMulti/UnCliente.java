@@ -3,6 +3,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.Map;
 
 public class UnCliente implements Runnable {
     private final Socket socket;
@@ -53,11 +54,21 @@ public class UnCliente implements Runnable {
 
     private void manejarMensajePublico(String mensaje) throws IOException {
         String mensajeCompleto = "[Cliente #" + id + "]: " + mensaje;
-        for (UnCliente cliente : ClienteManager.obtenerTodos().values()) {
-            cliente.enviarMensaje(mensajeCompleto);
+        enviarBroadcast(mensajeCompleto);
+    }
+
+    private void enviarBroadcast(String mensaje) throws IOException {
+        Map<String, UnCliente> todosClientes = ClienteManager.obtenerTodos();
+        for (UnCliente cliente : todosClientes.values()) {
+            enviarSiNoEsRemitente(cliente, mensaje);
         }
     }
 
+    private void enviarSiNoEsRemitente(UnCliente cliente, String mensaje) throws IOException {
+        if (!cliente.id.equals(this.id)) {
+            cliente.enviarMensaje(mensaje);
+        }
+    }
     private void manejarMensajePrivado(String mensaje) throws IOException {
         String mensajeCompleto = "[PRIVADO de Cliente #" + id + "]: " + mensaje;
         String[] partes = mensaje.substring(1).split(" ", 2);
