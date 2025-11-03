@@ -11,6 +11,11 @@ public class UnCliente implements Runnable {
     private final DataInputStream entrada;
     private String id;
 
+    private String displayName;
+    private int mensajesEnviados = 0;
+    private boolean estaAutenticado = false;
+    private static final int LIMITE_MENSAJES = 3;
+
     public UnCliente(Socket s) throws IOException {
         this.socket = s;
         this.salida = new DataOutputStream(s.getOutputStream());
@@ -19,6 +24,7 @@ public class UnCliente implements Runnable {
 
     public void setId(String id) {
         this.id = id;
+        this.displayName = "Invitado #" + id;
     }
 
     public void enviarMensaje(String mensaje) throws IOException {
@@ -27,6 +33,7 @@ public class UnCliente implements Runnable {
 
     @Override
     public void run() {
+        enviarMensajeInicio();
         try {
             escucharMensajes();
         } catch (IOException e) {
@@ -34,6 +41,14 @@ public class UnCliente implements Runnable {
             ClienteManager.eliminarCliente(id);
             cerrarConexion();
         }
+    }
+
+    private void enviarMensajeInicio() {
+        try {
+            enviarMensaje("--- BIENVENIDO CLIENTE " + displayName.toUpperCase() + " ---");
+            enviarMensaje("Modo Invitado: Puedes enviar " + LIMITE_MENSAJES + " mensajes antes de iniciar sesión.");
+            enviarMensaje("Usa: /register <usuario> <pass> o /login <usuario> <pass>");
+        } catch (IOException ignored) {}
     }
 
     private void escucharMensajes() throws IOException {
@@ -45,21 +60,73 @@ public class UnCliente implements Runnable {
     }
 
     private void procesarMensaje(String mensaje) throws IOException {
-        if (mensaje.startsWith("@")) {
+        if (esComandoDeAutenticacion(mensaje)) {
+            manejarComando(mensaje);
+        } else if (mensaje.startsWith("@")) {
             manejarMensajePrivado(mensaje);
         } else {
             manejarMensajePublico(mensaje);
         }
     }
 
+    private boolean esComandoDeAutenticacion(String mensaje) {
+        return mensaje.startsWith("/login") || mensaje.startsWith("/register");
+    }
+
+    private void manejarComando(String comando) throws IOException {
+        String[] partes = comando.split(" ", 3);
+        if (partes.length != 3) {
+            enviarMensaje("[ERROR] Formato incorrecto. Uso: /comando <usuario> <pass>");
+            return;
+        }
+
+        String user = partes[1];
+        String pass = partes[2];
+
+        if (partes[0].equalsIgnoreCase("/register")) {
+            procesarRegistro(user, pass);
+        } else if (partes[0].equalsIgnoreCase("/login")) {
+            procesarLogin(user, pass);
+        }
+    }
+
+    private void procesarRegistro(String user, String pass) throws IOException {
+        if (ClienteAuthManager.registrarUsuario(user, pass)) {
+            estaAutenticado = true;
+            this.displayName = user;
+            enviarMensaje("[INFO] ¡Registro exitoso! Ahora estás conectado como: " + user);
+        } else {
+            enviarMensaje("[ERROR] El usuario '" + user + "' ya existe.");
+        }
+    }
+
+    private void procesarLogin(String user, String pass) throws IOException {
+        if (ClienteAuthManager.verificarCredenciales(user, pass)) {
+            estaAutenticado = true;
+            this.displayName = user;
+            enviarMensaje("[INFO] ¡Inicio de sesión exitoso! Ahora estás conectado como: " + user);
+        } else {
+            enviarMensaje("[ERROR] Credenciales incorrectas.");
+        }
+    }
+
     private void manejarMensajePublico(String mensaje) throws IOException {
-        String mensajeCompleto = "[Cliente #" + id + "]: " + mensaje;
+        if (!puedeEnviarMensaje()) {
+            enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado. Por favor, regístrate o inicia sesión.");
+            return;
+        }
+
+        mensajesEnviados++;
+        String mensajeCompleto = "[" + displayName + "]: " + mensaje;
         enviarBroadcast(mensajeCompleto);
     }
 
+    private boolean puedeEnviarMensaje() {
+        return estaAutenticado || mensajesEnviados < LIMITE_MENSAJES;
+    }
+
     private void enviarBroadcast(String mensaje) throws IOException {
-        Map<String, UnCliente> todosClientes = ClienteManager.obtenerTodos();
-        for (UnCliente cliente : todosClientes.values()) {
+        for (UnCliente cliente : ClienteManager.obtenerTodos().values()) {
             enviarSiNoEsRemitente(cliente, mensaje);
         }
     }
@@ -69,8 +136,15 @@ public class UnCliente implements Runnable {
             cliente.enviarMensaje(mensaje);
         }
     }
+
     private void manejarMensajePrivado(String mensaje) throws IOException {
-        String mensajeCompleto = "[PRIVADO de Cliente #" + id + "]: " + mensaje;
+        if (!puedeEnviarMensaje()) {
+            enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado.");
+            return;
+        }
+        mensajesEnviados++;
+
+        String mensajeCompleto = "[PRIVADO de " + displayName + "]: " + mensaje;
         String[] partes = mensaje.substring(1).split(" ", 2);
 
         if (partes.length < 2) return;
