@@ -3,12 +3,11 @@ import ServidorMulti.Juego.JuegoManager;
 import ServidorMulti.ClienteAuthManager;
 import ServidorMulti.BlockListManager;
 import ServidorMulti.ClienteManager;
-
+import ServidorMulti.Juego.RankingManager;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class UnCliente implements Runnable {
@@ -25,21 +24,17 @@ public class UnCliente implements Runnable {
     public UnCliente(Socket s) throws IOException {
         this.socket = s;
         this.salida = new DataOutputStream(s.getOutputStream());
-        this.entrada = new DataInputStream(s.getInputStream());
-    }
+        this.entrada = new DataInputStream(s.getInputStream());}
 
     public void setId(String id) {
         this.id = id;
-        this.displayName = "Invitado #" + id;
-    }
+        this.displayName = "Invitado #" + id;}
 
     public String getDisplayName() {
-        return displayName;
-    }
+        return displayName;}
 
     public void enviarMensaje(String mensaje) throws IOException {
-        salida.writeUTF(mensaje);
-    }
+        salida.writeUTF(mensaje);}
 
     @Override
     public void run() {
@@ -47,14 +42,12 @@ public class UnCliente implements Runnable {
         try {
             escucharMensajes();
         } catch (IOException e) {
-            // Manejo de excepción de desconexión silenciosa
+            System.out.println("Cliente desconectado: " + displayName);
         } finally {
-            try {
-                JuegoManager.forzarRendicion(this.displayName);
-            } catch (IOException ignored) {}
+            JuegoManager.forzarRendicion(this.displayName);
+
             ClienteManager.eliminarCliente(id);
-            cerrarConexion();
-        }
+            cerrarConexion();}
     }
 
     private void enviarMensajeInicio() {
@@ -63,6 +56,7 @@ public class UnCliente implements Runnable {
             enviarMensaje("Modo Invitado: Puedes enviar " + LIMITE_MENSAJES + " mensajes antes de iniciar sesión.");
             enviarMensaje("Usa: /register <usuario> <pass> o /login <usuario> <pass>");
             enviarMensaje("Comandos: /block <user>, /unblock <user>, /gato <user>, /aceptar <user>, /rechazar <user>");
+            enviarMensaje("Comandos RANKING: /ranking general, /ranking yo, /ranking <user1> vs <user2>");
             enviarMensaje("Juego Gato: Para mover, usa: [posicion] contra [oponente] (e.g., 5 contra U3)");
         } catch (IOException ignored) {}
     }
@@ -71,8 +65,7 @@ public class UnCliente implements Runnable {
         String mensaje;
         while (!socket.isClosed()) {
             mensaje = entrada.readUTF();
-            procesarMensaje(mensaje);
-        }
+            procesarMensaje(mensaje);}
     }
 
     private void procesarMensaje(String mensaje) throws IOException {
@@ -83,39 +76,35 @@ public class UnCliente implements Runnable {
         } else if (mensaje.startsWith("@")) {
             manejarMensajePrivado(mensaje);
         } else {
-            manejarMensajePublico(mensaje);
-        }
+            manejarMensajePublico(mensaje);}
     }
 
-    // --- LÓGICA DE COMANDOS ---
     private boolean esComando(String mensaje) {
         return mensaje.startsWith("/") &&
                 (esComandoDeAutenticacion(mensaje) ||
                         esComandoDeBloqueo(mensaje) ||
                         esComandoDeJuego(mensaje) ||
-                        esComandoDeRevancha(mensaje));
-    }
+                        esComandoDeRevancha(mensaje) ||
+                        mensaje.startsWith("/ranking"));}
 
     private boolean esComandoDeAutenticacion(String mensaje) {
-        return mensaje.startsWith("/login") || mensaje.startsWith("/register");
-    }
+        return mensaje.startsWith("/login") || mensaje.startsWith("/register");}
 
     private boolean esComandoDeBloqueo(String mensaje) {
-        return mensaje.startsWith("/block") || mensaje.startsWith("/unblock");
-    }
+        return mensaje.startsWith("/block") || mensaje.startsWith("/unblock");}
 
     private boolean esComandoDeJuego(String mensaje) {
         return mensaje.startsWith("/gato") ||
                 mensaje.startsWith("/aceptar") ||
-                mensaje.startsWith("/rechazar");
-    }
+                mensaje.startsWith("/rechazar");}
 
     private boolean esComandoDeRevancha(String mensaje) {
-        return mensaje.equalsIgnoreCase("/si") || mensaje.equalsIgnoreCase("/no");
-    }
+        return mensaje.equalsIgnoreCase("/si") || mensaje.equalsIgnoreCase("/no");}
 
     private void manejarComando(String comando) throws IOException {
-        if (esComandoDeAutenticacion(comando)) {
+        if (comando.startsWith("/ranking")) {
+            manejarComandoRanking(comando);
+        } else if (esComandoDeAutenticacion(comando)) {
             manejarComandoAutenticacion(comando);
         } else if (esComandoDeBloqueo(comando)) {
             manejarComandoBloqueo(comando);
@@ -124,59 +113,89 @@ public class UnCliente implements Runnable {
         } else if (esComandoDeRevancha(comando)) {
             JuegoManager.procesarRevancha(displayName, comando);
         } else {
-            enviarMensaje("[ERROR] Comando desconocido o formato incorrecto.");
-        }
+            enviarMensaje("[ERROR] Comando desconocido o formato incorrecto.");}
+    }
+
+    private void manejarComandoRanking(String comando) throws IOException {
+        String[] partes = comando.trim().split("\\s+", 2);
+
+        if (partes.length < 2) {
+            enviarMensaje("[ERROR RANKING] Formato incorrecto. Uso: /ranking general, /ranking yo o /ranking <user1> vs <user2>");
+            return;}
+        String argumento = partes[1].trim();
+        String subComando = argumento.split("\\s+")[0].toLowerCase(); // Toma solo la primera palabra
+
+        if (subComando.equals("general")) {
+            enviarMensaje(RankingManager.generarRankingGeneral(displayName));
+        } else if (subComando.equals("yo")) {
+            if (!estaAutenticado) {
+                enviarMensaje("[ERROR RANKING] Debes iniciar sesión para ver tus estadísticas.");
+                return;}
+            enviarMensaje(RankingManager.generarRankingPersonal(displayName));
+        } else if (argumento.toLowerCase().contains("vs")) {
+            procesarRankingDuelo(argumento);
+        } else {
+            enviarMensaje("[ERROR RANKING] Subcomando no reconocido. Intenta: general, yo, o <user1> vs <user2>.");}
+    }
+
+    private void procesarRankingDuelo(String dueloStr) throws IOException {
+        String[] jugadores = dueloStr.split("\\s+vs\\s+");
+
+        if (jugadores.length != 2) {
+            enviarMensaje("[ERROR RANKING] Formato de duelo incorrecto. Uso: /ranking <user1> vs <user2>");
+            return;}
+        String user1 = jugadores[0].trim();
+        String user2 = jugadores[1].trim();
+
+        if (user1.isEmpty() || user2.isEmpty()) {
+            enviarMensaje("[ERROR RANKING] Los nombres de usuario no pueden estar vacíos.");
+            return;}
+
+        enviarMensaje(RankingManager.generarRankingDuelo(user1, user2));
     }
 
     private void manejarComandoAutenticacion(String comando) throws IOException {
         String[] partes = comando.split(" ", 3);
         if (partes.length != 3) {
             enviarMensaje("[ERROR] Formato incorrecto. Uso: /comando <usuario> <pass>");
-            return;
-        }
+            return;}
 
         String user = partes[1];
         String pass = partes[2];
         if (comando.startsWith("/register")) {
             procesarRegistro(user, pass);
         } else if (comando.startsWith("/login")) {
-            procesarLogin(user, pass);
-        }
+            procesarLogin(user, pass);}
     }
 
     private void procesarRegistro(String user, String pass) throws IOException {
         if (ClienteAuthManager.registrarUsuario(user, pass)) {
             establecerAutenticacion(user);
         } else {
-            enviarMensaje("[ERROR] El usuario '" + user + "' ya existe.");
-        }
+            enviarMensaje("[ERROR] El usuario '" + user + "' ya existe.");}
     }
 
     private void procesarLogin(String user, String pass) throws IOException {
         if (ClienteAuthManager.verificarCredenciales(user, pass)) {
             establecerAutenticacion(user);
         } else {
-            enviarMensaje("[ERROR] Credenciales incorrectas.");
-        }
+            enviarMensaje("[ERROR] Credenciales incorrectas.");}
     }
 
     private void establecerAutenticacion(String user) throws IOException {
         this.estaAutenticado = true;
         this.displayName = user;
-        enviarMensaje("[INFO] ¡Autenticación exitosa! Conectado como: " + user);
-    }
+        enviarMensaje("[INFO] ¡Autenticación exitosa! Conectado como: " + user);}
 
     private void manejarComandoBloqueo(String comando) throws IOException {
         if (!estaAutenticado) {
             enviarMensaje("[ERROR] Debes iniciar sesión para usar los comandos /block y /unblock.");
-            return;
-        }
+            return;}
 
         String[] partes = comando.split(" ", 2);
         if (partes.length != 2) {
             enviarMensaje("[ERROR] Formato incorrecto. Uso: /comando <usuario_objetivo>");
-            return;
-        }
+            return;}
 
         String objetivo = partes[1].trim();
         ejecutarAccionBloqueo(comando, objetivo);
@@ -185,81 +204,65 @@ public class UnCliente implements Runnable {
     private void ejecutarAccionBloqueo(String comando, String objetivo) throws IOException {
         if (objetivo.equals(displayName)) {
             enviarMensaje("[ERROR] No puedes bloquearte a ti mismo.");
-            return;
-        }
+            return;}
         if (!ClienteAuthManager.existeUsuario(objetivo)) {
             enviarMensaje("[ERROR] El usuario '" + objetivo + "' no existe.");
-            return;
-        }
+            return;}
 
         if (comando.startsWith("/block")) {
             ejecutarBloqueo(objetivo);
         } else if (comando.startsWith("/unblock")) {
-            ejecutarDesbloqueo(objetivo);
-        }
+            ejecutarDesbloqueo(objetivo);}
     }
 
     private void ejecutarBloqueo(String objetivo) throws IOException {
         if (BlockListManager.bloquearUsuario(displayName, objetivo)) {
             enviarMensaje("[INFO] Bloqueaste a " + objetivo + ". Se ha silenciado la comunicación mutua.");
         } else {
-            enviarMensaje("[ADVERTENCIA] " + objetivo + " ya estaba bloqueado.");
-        }
+            enviarMensaje("[ADVERTENCIA] " + objetivo + " ya estaba bloqueado.");}
     }
 
     private void ejecutarDesbloqueo(String objetivo) throws IOException {
         if (BlockListManager.desbloquearUsuario(displayName, objetivo)) {
             enviarMensaje("[INFO] Desbloqueaste a " + objetivo + ". La comunicación mutua ha sido restaurada.");
         } else {
-            enviarMensaje("[ADVERTENCIA] " + objetivo + " no estaba en tu lista de bloqueo.");
-        }
+            enviarMensaje("[ADVERTENCIA] " + objetivo + " no estaba en tu lista de bloqueo.");}
     }
 
     private void manejarComandoJuego(String comando) throws IOException {
         String[] partes = comando.split(" ", 2);
         if (partes.length != 2) {
             enviarMensaje("[ERROR GATO] Formato incorrecto. Uso: /comando <usuario_objetivo>");
-            return;
-        }
+            return;}
 
         String objetivo = partes[1].trim();
         String accion = partes[0];
 
         if (!estaAutenticado) {
             enviarMensaje("[ERROR GATO] Debes iniciar sesión para jugar.");
-            return;
-        }
+            return;}
         if (!ClienteAuthManager.existeUsuario(objetivo)) {
             enviarMensaje("[ERROR GATO] El usuario '" + objetivo + "' no existe.");
-            return;
-        }
+            return;}
         if (objetivo.equals(displayName)) {
             enviarMensaje("[ERROR GATO] No puedes jugar contra ti mismo.");
-            return;
-        }
+            return;}
 
         if (accion.equals("/gato")) {
             JuegoManager.invitar(displayName, objetivo);
         } else if (accion.equals("/aceptar")) {
             JuegoManager.iniciarPartida(objetivo, displayName);
         } else if (accion.equals("/rechazar")) {
-            JuegoManager.rechazar(objetivo, displayName);
-        }
+            JuegoManager.rechazar(objetivo, displayName);}
     }
 
-    // Lógica para detectar el nuevo formato: "[posicion] contra [oponente]"
     private boolean esMovimientoGato(String mensaje) {
         if (JuegoManager.obtenerPartida(displayName) == null) {
-            return false;
-        }
-        // Expresión regular para "Dígito contra Palabra"
+            return false;}
         Pattern pattern = Pattern.compile("^\\s*\\d+\\s+contra\\s+\\w+\\s*$");
-        return pattern.matcher(mensaje).matches();
-    }
+        return pattern.matcher(mensaje).matches();}
 
-    // Lógica para manejar el nuevo formato: "[posicion] contra [oponente]"
     private void manejarMovimientoGato(String mensaje) throws IOException {
-        // Asumiendo formato: "5 contra U3"
         String[] partes = mensaje.trim().split("\\s+contra\\s+");
 
         if (partes.length != 2) {
@@ -272,36 +275,29 @@ public class UnCliente implements Runnable {
             String oponente = partes[1].trim();
 
             if (posicion >= 0 && posicion <= 8) {
-                // Llamamos al nuevo método en JuegoManager que requiere el oponente
                 JuegoManager.procesarMovimiento(displayName, oponente, posicion);
             } else {
                 enviarMensaje("[ERROR GATO] La posición debe ser entre 0 y 8.");
             }
         } catch (NumberFormatException e) {
-            enviarMensaje("[ERROR GATO] La posición debe ser un número (0-8).");
-        }
+            enviarMensaje("[ERROR GATO] La posición debe ser un número (0-8).");}
     }
 
-    // ... (El resto de métodos de mensajería permanecen iguales)
     private void manejarMensajePublico(String mensaje) throws IOException {
         if (!puedeEnviarMensaje()) {
             enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado. Por favor, regístrate o inicia sesión.");
-            return;
-        }
+            return;}
 
         mensajesEnviados++;
         String mensajeCompleto = "[" + displayName + "]: " + mensaje;
-        enviarBroadcast(mensajeCompleto);
-    }
+        enviarBroadcast(mensajeCompleto);}
 
     private boolean puedeEnviarMensaje() {
-        return estaAutenticado || mensajesEnviados < LIMITE_MENSAJES;
-    }
+        return estaAutenticado || mensajesEnviados < LIMITE_MENSAJES;}
 
     private void enviarBroadcast(String mensaje) throws IOException {
         for (UnCliente cliente : ClienteManager.obtenerTodos().values()) {
-            enviarSiNoEstaBloqueadoYNoEsRemitente(cliente, mensaje);
-        }
+            enviarSiNoEstaBloqueadoYNoEsRemitente(cliente, mensaje);}
     }
 
     private void enviarSiNoEstaBloqueadoYNoEsRemitente(UnCliente receptor, String mensaje) throws IOException {
@@ -309,8 +305,7 @@ public class UnCliente implements Runnable {
 
         if (BlockListManager.estaBloqueado(receptor.displayName, this.displayName) ||
                 BlockListManager.estaBloqueado(this.displayName, receptor.displayName)) {
-            return;
-        }
+            return;}
 
         receptor.enviarMensaje(mensaje);
     }
@@ -327,8 +322,7 @@ public class UnCliente implements Runnable {
 
         if (partes.length < 2) {
             enviarMensaje("[ERROR] Formato privado incorrecto. Uso: @<user1,user2> mensaje");
-            return;
-        }
+            return;}
 
         String[] destinatarios = partes[0].split(",");
         enviarADestinatarios(destinatarios, mensajeCompleto);
@@ -347,8 +341,7 @@ public class UnCliente implements Runnable {
             }
         }
         if (!enviado) {
-            enviarMensaje("[ADVERTENCIA] No se encontró o se pudo enviar el mensaje a ningún destinatario.");
-        }
+            enviarMensaje("[ADVERTENCIA] No se encontró o se pudo enviar el mensaje a ningún destinatario.");}
     }
 
     private void cerrarConexion() {
