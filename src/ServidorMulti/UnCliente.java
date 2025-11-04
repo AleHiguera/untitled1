@@ -2,12 +2,14 @@ package ServidorMulti;
 import ServidorMulti.Juego.JuegoManager;
 import ServidorMulti.ClienteAuthManager;
 import ServidorMulti.BlockListManager;
-import ServidorMulti.ClienteManager; // Import para ClienteManager
+import ServidorMulti.ClienteManager;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class UnCliente implements Runnable {
     private final Socket socket;
@@ -61,6 +63,7 @@ public class UnCliente implements Runnable {
             enviarMensaje("Modo Invitado: Puedes enviar " + LIMITE_MENSAJES + " mensajes antes de iniciar sesión.");
             enviarMensaje("Usa: /register <usuario> <pass> o /login <usuario> <pass>");
             enviarMensaje("Comandos: /block <user>, /unblock <user>, /gato <user>, /aceptar <user>, /rechazar <user>");
+            enviarMensaje("Juego Gato: Para mover, usa: [posicion] contra [oponente] (e.g., 5 contra U3)");
         } catch (IOException ignored) {}
     }
 
@@ -240,24 +243,46 @@ public class UnCliente implements Runnable {
         } else if (accion.equals("/aceptar")) {
             JuegoManager.iniciarPartida(objetivo, displayName);
         } else if (accion.equals("/rechazar")) {
-            JuegoManager.rechazar(objetivo, displayName); // Método que causaba error si no era público en JuegoManager
+            JuegoManager.rechazar(objetivo, displayName);
         }
     }
 
+    // Lógica para detectar el nuevo formato: "[posicion] contra [oponente]"
     private boolean esMovimientoGato(String mensaje) {
-        try {
-            int pos = Integer.parseInt(mensaje.trim());
-            return pos >= 0 && pos <= 8 && JuegoManager.obtenerPartida(displayName) != null;
-        } catch (NumberFormatException e) {
+        if (JuegoManager.obtenerPartida(displayName) == null) {
             return false;
         }
+        // Expresión regular para "Dígito contra Palabra"
+        Pattern pattern = Pattern.compile("^\\s*\\d+\\s+contra\\s+\\w+\\s*$");
+        return pattern.matcher(mensaje).matches();
     }
 
+    // Lógica para manejar el nuevo formato: "[posicion] contra [oponente]"
     private void manejarMovimientoGato(String mensaje) throws IOException {
-        int posicion = Integer.parseInt(mensaje.trim());
-        JuegoManager.procesarMovimiento(displayName, posicion);
+        // Asumiendo formato: "5 contra U3"
+        String[] partes = mensaje.trim().split("\\s+contra\\s+");
+
+        if (partes.length != 2) {
+            enviarMensaje("[ERROR GATO] Formato de movimiento incorrecto. Usa: [posicion] contra [oponente]");
+            return;
+        }
+
+        try {
+            int posicion = Integer.parseInt(partes[0].trim());
+            String oponente = partes[1].trim();
+
+            if (posicion >= 0 && posicion <= 8) {
+                // Llamamos al nuevo método en JuegoManager que requiere el oponente
+                JuegoManager.procesarMovimiento(displayName, oponente, posicion);
+            } else {
+                enviarMensaje("[ERROR GATO] La posición debe ser entre 0 y 8.");
+            }
+        } catch (NumberFormatException e) {
+            enviarMensaje("[ERROR GATO] La posición debe ser un número (0-8).");
+        }
     }
 
+    // ... (El resto de métodos de mensajería permanecen iguales)
     private void manejarMensajePublico(String mensaje) throws IOException {
         if (!puedeEnviarMensaje()) {
             enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado. Por favor, regístrate o inicia sesión.");
