@@ -25,4 +25,13 @@ public class ClienteManager {
     public static UnCliente obtenerCliente(String id) {
         return clientes.get(id);
     }
+
+    public static UnCliente obtenerClientePorNombre(String displayName) {
+        for (UnCliente cliente : clientes.values()) {
+            if (cliente.getDisplayName().equals(displayName)) {
+                return cliente;
+            }
+        }
+        return null;
+    }
 }

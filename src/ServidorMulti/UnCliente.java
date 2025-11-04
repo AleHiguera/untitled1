@@ -1,9 +1,13 @@
 package ServidorMulti;
+import ServidorMulti.Juego.JuegoManager;
+import ServidorMulti.ClienteAuthManager;
+import ServidorMulti.BlockListManager;
+import ServidorMulti.ClienteManager; // Import para ClienteManager
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.util.Map;
 
 public class UnCliente implements Runnable {
     private final Socket socket;
@@ -27,6 +31,10 @@ public class UnCliente implements Runnable {
         this.displayName = "Invitado #" + id;
     }
 
+    public String getDisplayName() {
+        return displayName;
+    }
+
     public void enviarMensaje(String mensaje) throws IOException {
         salida.writeUTF(mensaje);
     }
@@ -37,7 +45,11 @@ public class UnCliente implements Runnable {
         try {
             escucharMensajes();
         } catch (IOException e) {
+            // Manejo de excepción de desconexión silenciosa
         } finally {
+            try {
+                JuegoManager.forzarRendicion(this.displayName);
+            } catch (IOException ignored) {}
             ClienteManager.eliminarCliente(id);
             cerrarConexion();
         }
@@ -48,7 +60,7 @@ public class UnCliente implements Runnable {
             enviarMensaje("--- BIENVENIDO CLIENTE " + displayName.toUpperCase() + " ---");
             enviarMensaje("Modo Invitado: Puedes enviar " + LIMITE_MENSAJES + " mensajes antes de iniciar sesión.");
             enviarMensaje("Usa: /register <usuario> <pass> o /login <usuario> <pass>");
-            enviarMensaje("Comandos: /block <user>, /unblock <user>");
+            enviarMensaje("Comandos: /block <user>, /unblock <user>, /gato <user>, /aceptar <user>, /rechazar <user>");
         } catch (IOException ignored) {}
     }
 
@@ -63,6 +75,8 @@ public class UnCliente implements Runnable {
     private void procesarMensaje(String mensaje) throws IOException {
         if (esComando(mensaje)) {
             manejarComando(mensaje);
+        } else if (esMovimientoGato(mensaje)) {
+            manejarMovimientoGato(mensaje);
         } else if (mensaje.startsWith("@")) {
             manejarMensajePrivado(mensaje);
         } else {
@@ -70,8 +84,13 @@ public class UnCliente implements Runnable {
         }
     }
 
+    // --- LÓGICA DE COMANDOS ---
     private boolean esComando(String mensaje) {
-        return mensaje.startsWith("/") && (esComandoDeAutenticacion(mensaje) || esComandoDeBloqueo(mensaje));
+        return mensaje.startsWith("/") &&
+                (esComandoDeAutenticacion(mensaje) ||
+                        esComandoDeBloqueo(mensaje) ||
+                        esComandoDeJuego(mensaje) ||
+                        esComandoDeRevancha(mensaje));
     }
 
     private boolean esComandoDeAutenticacion(String mensaje) {
@@ -82,13 +101,30 @@ public class UnCliente implements Runnable {
         return mensaje.startsWith("/block") || mensaje.startsWith("/unblock");
     }
 
+    private boolean esComandoDeJuego(String mensaje) {
+        return mensaje.startsWith("/gato") ||
+                mensaje.startsWith("/aceptar") ||
+                mensaje.startsWith("/rechazar");
+    }
+
+    private boolean esComandoDeRevancha(String mensaje) {
+        return mensaje.equalsIgnoreCase("/si") || mensaje.equalsIgnoreCase("/no");
+    }
+
     private void manejarComando(String comando) throws IOException {
         if (esComandoDeAutenticacion(comando)) {
             manejarComandoAutenticacion(comando);
         } else if (esComandoDeBloqueo(comando)) {
             manejarComandoBloqueo(comando);
+        } else if (esComandoDeJuego(comando)) {
+            manejarComandoJuego(comando);
+        } else if (esComandoDeRevancha(comando)) {
+            JuegoManager.procesarRevancha(displayName, comando);
+        } else {
+            enviarMensaje("[ERROR] Comando desconocido o formato incorrecto.");
         }
     }
+
     private void manejarComandoAutenticacion(String comando) throws IOException {
         String[] partes = comando.split(" ", 3);
         if (partes.length != 3) {
@@ -126,6 +162,7 @@ public class UnCliente implements Runnable {
         this.displayName = user;
         enviarMensaje("[INFO] ¡Autenticación exitosa! Conectado como: " + user);
     }
+
     private void manejarComandoBloqueo(String comando) throws IOException {
         if (!estaAutenticado) {
             enviarMensaje("[ERROR] Debes iniciar sesión para usar los comandos /block y /unblock.");
@@ -147,6 +184,11 @@ public class UnCliente implements Runnable {
             enviarMensaje("[ERROR] No puedes bloquearte a ti mismo.");
             return;
         }
+        if (!ClienteAuthManager.existeUsuario(objetivo)) {
+            enviarMensaje("[ERROR] El usuario '" + objetivo + "' no existe.");
+            return;
+        }
+
         if (comando.startsWith("/block")) {
             ejecutarBloqueo(objetivo);
         } else if (comando.startsWith("/unblock")) {
@@ -155,10 +197,6 @@ public class UnCliente implements Runnable {
     }
 
     private void ejecutarBloqueo(String objetivo) throws IOException {
-        if (!ClienteAuthManager.existeUsuario(objetivo)) {
-            enviarMensaje("[ERROR] El usuario '" + objetivo + "' no existe para ser bloqueado.");
-            return;
-        }
         if (BlockListManager.bloquearUsuario(displayName, objetivo)) {
             enviarMensaje("[INFO] Bloqueaste a " + objetivo + ". Se ha silenciado la comunicación mutua.");
         } else {
@@ -173,6 +211,53 @@ public class UnCliente implements Runnable {
             enviarMensaje("[ADVERTENCIA] " + objetivo + " no estaba en tu lista de bloqueo.");
         }
     }
+
+    private void manejarComandoJuego(String comando) throws IOException {
+        String[] partes = comando.split(" ", 2);
+        if (partes.length != 2) {
+            enviarMensaje("[ERROR GATO] Formato incorrecto. Uso: /comando <usuario_objetivo>");
+            return;
+        }
+
+        String objetivo = partes[1].trim();
+        String accion = partes[0];
+
+        if (!estaAutenticado) {
+            enviarMensaje("[ERROR GATO] Debes iniciar sesión para jugar.");
+            return;
+        }
+        if (!ClienteAuthManager.existeUsuario(objetivo)) {
+            enviarMensaje("[ERROR GATO] El usuario '" + objetivo + "' no existe.");
+            return;
+        }
+        if (objetivo.equals(displayName)) {
+            enviarMensaje("[ERROR GATO] No puedes jugar contra ti mismo.");
+            return;
+        }
+
+        if (accion.equals("/gato")) {
+            JuegoManager.invitar(displayName, objetivo);
+        } else if (accion.equals("/aceptar")) {
+            JuegoManager.iniciarPartida(objetivo, displayName);
+        } else if (accion.equals("/rechazar")) {
+            JuegoManager.rechazar(objetivo, displayName); // Método que causaba error si no era público en JuegoManager
+        }
+    }
+
+    private boolean esMovimientoGato(String mensaje) {
+        try {
+            int pos = Integer.parseInt(mensaje.trim());
+            return pos >= 0 && pos <= 8 && JuegoManager.obtenerPartida(displayName) != null;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private void manejarMovimientoGato(String mensaje) throws IOException {
+        int posicion = Integer.parseInt(mensaje.trim());
+        JuegoManager.procesarMovimiento(displayName, posicion);
+    }
+
     private void manejarMensajePublico(String mensaje) throws IOException {
         if (!puedeEnviarMensaje()) {
             enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado. Por favor, regístrate o inicia sesión.");
@@ -195,18 +280,16 @@ public class UnCliente implements Runnable {
     }
 
     private void enviarSiNoEstaBloqueadoYNoEsRemitente(UnCliente receptor, String mensaje) throws IOException {
-        if (receptor.id.equals(this.id)) {
-            return;
-        }
-        if (BlockListManager.estaBloqueado(receptor.displayName, this.displayName)) {
-            return;
-        }
-        if (BlockListManager.estaBloqueado(this.displayName, receptor.displayName)) {
+        if (receptor.id.equals(this.id)) return;
+
+        if (BlockListManager.estaBloqueado(receptor.displayName, this.displayName) ||
+                BlockListManager.estaBloqueado(this.displayName, receptor.displayName)) {
             return;
         }
 
         receptor.enviarMensaje(mensaje);
     }
+
     private void manejarMensajePrivado(String mensaje) throws IOException {
         if (!puedeEnviarMensaje()) {
             enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado.");
@@ -217,10 +300,12 @@ public class UnCliente implements Runnable {
         String mensajeCompleto = "[PRIVADO de " + displayName + "]: " + mensaje;
         String[] partes = mensaje.substring(1).split(" ", 2);
 
-        if (partes.length < 2) return;
+        if (partes.length < 2) {
+            enviarMensaje("[ERROR] Formato privado incorrecto. Uso: @<user1,user2> mensaje");
+            return;
+        }
 
         String[] destinatarios = partes[0].split(",");
-
         enviarADestinatarios(destinatarios, mensajeCompleto);
     }
 
@@ -228,14 +313,16 @@ public class UnCliente implements Runnable {
         boolean enviado = false;
         for (String nombre : destinatarios) {
             String nombreLimpio = nombre.trim();
-            UnCliente cliente = ClienteManager.obtenerCliente(nombreLimpio);
-            if (cliente != null) {
+            UnCliente cliente = ClienteManager.obtenerClientePorNombre(nombreLimpio);
+            if (cliente != null && !BlockListManager.estaBloqueado(cliente.displayName, this.displayName)) {
                 cliente.enviarMensaje(mensaje);
                 enviado = true;
+            } else if (cliente != null && BlockListManager.estaBloqueado(cliente.displayName, this.displayName)) {
+                enviarMensaje("[ADVERTENCIA] No se pudo enviar mensaje a " + nombreLimpio + ". Te tiene bloqueado.");
             }
         }
         if (!enviado) {
-            System.err.println("Advertencia: No se encontró a ningún destinatario.");
+            enviarMensaje("[ADVERTENCIA] No se encontró o se pudo enviar el mensaje a ningún destinatario.");
         }
     }
 
