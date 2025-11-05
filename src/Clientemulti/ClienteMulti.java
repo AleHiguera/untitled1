@@ -5,7 +5,7 @@ import java.net.Socket;
 public class ClienteMulti {
     private static final String HOST = "localhost";
     private static final int PUERTO = 8080;
-
+Socket s=null;
     public static void main(String[] args) {
         Socket s = null;
         try {
