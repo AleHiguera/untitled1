@@ -1,10 +1,8 @@
 package ServidorMulti;
 import ServidorMulti.Juego.JuegoManager;
-import ServidorMulti.ClienteAuthManager;
-import ServidorMulti.BlockListManager;
-import ServidorMulti.ClienteManager;
 import ServidorMulti.Juego.RankingManager;
 import ServidorMulti.Grupos.GroupManager;
+import ServidorMulti.Util.MensajeUtil;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -17,14 +15,15 @@ public class UnCliente implements Runnable {
     private final DataInputStream entrada;
     private String id;
     private String displayName;
-    private int mensajesEnviados = 0;
+    private int accionesRealizadas = 0;
     private boolean estaAutenticado = false;
-    private static final int LIMITE_MENSAJES = 3;
+    private static final int LIMITE_ACCIONES = 3;
 
     public UnCliente(Socket s) throws IOException {
         this.socket = s;
         this.salida = new DataOutputStream(s.getOutputStream());
-        this.entrada = new DataInputStream(s.getInputStream());}
+        this.entrada = new DataInputStream(s.getInputStream());
+    }
 
     public void setId(String id) {
         this.id = id;
@@ -38,41 +37,86 @@ public class UnCliente implements Runnable {
 
     @Override
     public void run() {
-        GroupManager.asignarGrupoInicial(this.displayName, !this.estaAutenticado);
-
-        enviarMensajeInicio();
+        inicializarCliente();
         try {
             escucharMensajes();
         } catch (IOException e) {
             System.out.println("Cliente desconectado: " + displayName);
         } finally {
-            JuegoManager.forzarRendicion(this.displayName);
-            GroupManager.removerMiembroDeTodos(this.displayName);
+            limpiarRecursos();}
+    }
 
-            ClienteManager.eliminarCliente(id);
-            cerrarConexion();}
+    private void inicializarCliente() {
+        GroupManager.asignarGrupoInicial(this.displayName, !this.estaAutenticado);
+        enviarMensajeInicio();
+    }
+
+    private void limpiarRecursos() {
+        JuegoManager.forzarRendicion(this.displayName);
+        GroupManager.removerMiembroDeTodos(this.displayName);
+        ClienteManager.eliminarCliente(id);
+        cerrarConexion();}
+
+    private void cerrarConexion() {
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (IOException ignored) {}
     }
 
     private void enviarMensajeInicio() {
         try {
             enviarMensaje("--- BIENVENIDO CLIENTE " + displayName.toUpperCase() + " ---");
-            enviarMensaje("Modo Invitado: Puedes enviar " + LIMITE_MENSAJES + " mensajes antes de iniciar sesión.");
+            enviarMensaje("Modo Invitado: Puedes realizar **" + LIMITE_ACCIONES + " acciones** antes de iniciar sesión.");
             enviarMensaje("Usa: /register <usuario> <pass> o /login <usuario> <pass>");
             enviarMensaje("Comandos: /block <user>, /unblock <user>, /gato <user>, /aceptar <user>, /rechazar <user>");
             enviarMensaje("Comandos RANKING: /ranking general, /ranking yo, /ranking <user1> vs <user2>");
             enviarMensaje("Comandos GRUPO: /grupo [lista|crear <nombre>|borrar <nombre>|unir <nombre>|cambiar <nombre>|ver]");
             enviarMensaje("Grupo actual: " + GroupManager.obtenerNombreGrupoActual(displayName));
-        } catch (IOException ignored) {}}
+        } catch (IOException ignored) {}
+    }
 
     private void escucharMensajes() throws IOException {
         String mensaje;
         while (!socket.isClosed()) {
             mensaje = entrada.readUTF();
-            procesarMensaje(mensaje);}
+            procesarEntrada(mensaje);}
     }
 
-    private void procesarMensaje(String mensaje) throws IOException {
-        if (esComando(mensaje)) {
+    private void procesarEntrada(String mensaje) throws IOException {
+        String trimmedMsg = mensaje.trim();
+        if (MensajeUtil.esComandoAutenticacion(trimmedMsg)) {
+            manejarComandoAutenticacion(trimmedMsg);
+            return;}
+        if (!puedeRealizarAccion()) {
+            enviarMensajeLimiteAlcanzado();
+            return;}
+
+        accionesRealizadas++;
+        delegarProcesamiento(trimmedMsg);
+        chequearLimiteAcciones();
+    }
+
+    private void chequearLimiteAcciones() throws IOException {
+        if (!estaAutenticado && accionesRealizadas == LIMITE_ACCIONES) {
+            enviarMensajeLimiteAlcanzado();
+        } else if (!estaAutenticado) {
+            int restantes = LIMITE_ACCIONES - accionesRealizadas;
+            enviarMensaje("[INFO] Acción registrada. Acciones restantes como invitado: " + restantes);}
+    }
+
+    private void enviarMensajeLimiteAlcanzado() throws IOException {
+        enviarMensaje("[ADVERTENCIA] ¡Límite de " + LIMITE_ACCIONES + " acciones alcanzado como invitado!");
+        enviarMensaje("[ADVERTENCIA] Por favor, usa /login <usuario> <pass> o /register <usuario> <pass> para continuar.");
+    }
+
+    private boolean puedeRealizarAccion() {
+        return estaAutenticado || accionesRealizadas < LIMITE_ACCIONES;}
+
+    private void delegarProcesamiento(String mensaje) throws IOException {
+        if (mensaje.isEmpty()) {
+        } else if (MensajeUtil.esComando(mensaje)) {
             manejarComando(mensaje);
         } else if (esMovimientoGato(mensaje)) {
             manejarMovimientoGato(mensaje);
@@ -82,68 +126,58 @@ public class UnCliente implements Runnable {
             manejarMensajePublico(mensaje);}
     }
 
-    private boolean esComando(String mensaje) {
-        return mensaje.startsWith("/") &&
-                (esComandoDeAutenticacion(mensaje) ||
-                        esComandoDeBloqueo(mensaje) ||
-                        esComandoDeJuego(mensaje) ||
-                        esComandoDeRevancha(mensaje) ||
-                        mensaje.startsWith("/ranking") ||
-                        mensaje.startsWith("/grupo"));}
-
-    private boolean esComandoDeAutenticacion(String mensaje) { return mensaje.startsWith("/login") || mensaje.startsWith("/register"); }
-    private boolean esComandoDeBloqueo(String mensaje) { return mensaje.startsWith("/block") || mensaje.startsWith("/unblock"); }
-    private boolean esComandoDeJuego(String mensaje) { return mensaje.startsWith("/gato") || mensaje.startsWith("/aceptar") || mensaje.startsWith("/rechazar"); }
-    private boolean esComandoDeRevancha(String mensaje) { return mensaje.equalsIgnoreCase("/si") || mensaje.equalsIgnoreCase("/no"); }
-
-
     private void manejarComando(String comando) throws IOException {
         if (comando.startsWith("/grupo")) {
             manejarComandoGrupo(comando);
         } else if (comando.startsWith("/ranking")) {
             manejarComandoRanking(comando);
-        } else if (esComandoDeAutenticacion(comando)) {
-            manejarComandoAutenticacion(comando);
-        } else if (esComandoDeBloqueo(comando)) {
+        } else if (MensajeUtil.esComandoBloqueo(comando)) {
             manejarComandoBloqueo(comando);
-        } else if (esComandoDeJuego(comando)) {
+        } else if (MensajeUtil.esComandoJuego(comando)) {
             manejarComandoJuego(comando);
-        } else if (esComandoDeRevancha(comando)) {
+        } else if (MensajeUtil.esComandoRevancha(comando)) {
             JuegoManager.procesarRevancha(displayName, comando);
         } else {
             enviarMensaje("[ERROR] Comando desconocido o formato incorrecto.");}
     }
+
     private void manejarComandoGrupo(String comando) throws IOException {
         String[] partes = comando.trim().split("\\s+", 3);
         String subComando = (partes.length > 1) ? partes[1].toLowerCase() : "";
-        if (partes.length == 1 || subComando.equals("lista") || subComando.equals("list")) {
-            String lista = GroupManager.obtenerListadoGrupos();
-            enviarMensaje(lista);
+
+        if (subComando.equals("lista") || subComando.equals("list") || partes.length == 1) {
+            enviarMensaje(GroupManager.obtenerListadoGrupos());
             enviarMensaje("[INFO GRUPO] Tu grupo actual es: " + GroupManager.obtenerNombreGrupoActual(displayName));
-            return;}
-        if (subComando.equals("crear") && partes.length == 3) {
-            enviarMensaje(GroupManager.crearGrupo(partes[2].trim(), displayName));
-        } else if (subComando.equals("borrar") && partes.length == 3) {
-            enviarMensaje(GroupManager.borrarGrupo(partes[2].trim(), displayName));
-        } else if (subComando.equals("unir") && partes.length == 3) {
-            enviarMensaje(GroupManager.unirGrupo(displayName, partes[2].trim()));}
-        else if (subComando.equals("cambiar") && partes.length == 3) {
-            enviarMensaje(GroupManager.unirGrupo(displayName, partes[2].trim()));}
-        else if (subComando.equals("ver")) { // Comando para ver mensajes no vistos
+        } else if (subComando.equals("ver")) {
             enviarMensaje(GroupManager.actualizarVistosYMostrar(displayName));
+        } else if (partes.length == 3) {
+            procesarAccionGrupoConNombre(subComando, partes[2].trim());
         } else {
-            enviarMensaje("[ERROR GRUPO] Formato incorrecto. Uso: /grupo [lista|crear <nombre>|borrar <nombre>|unir <nombre>|cambiar <nombre>|ver]");}
+            enviarMensaje("[ERROR GRUPO] Formato incorrecto. Uso: /grupo [lista|crear <nombre>|borrar <nombre>|unir <nombre>|cambiar <nombre>|ver]");
+        }
     }
+
+    private void procesarAccionGrupoConNombre(String subComando, String nombreGrupo) throws IOException {
+        if (subComando.equals("crear")) {
+            enviarMensaje(GroupManager.crearGrupo(nombreGrupo, displayName));
+        } else if (subComando.equals("borrar")) {
+            enviarMensaje(GroupManager.borrarGrupo(nombreGrupo, displayName));
+        } else if (subComando.equals("unir") || subComando.equals("cambiar")) {
+            enviarMensaje(GroupManager.unirGrupo(displayName, nombreGrupo));
+        } else {
+            enviarMensaje("[ERROR GRUPO] Comando no reconocido o formato incorrecto.");
+        }
+    }
+
     private void manejarComandoRanking(String comando) throws IOException {
-        String[] partes = comando.trim().split("\\s+", 2);
+        String argumento = MensajeUtil.obtenerArgumento(comando, 2);
 
-        if (partes.length < 2) {
+        if (argumento == null) {
             enviarMensaje("[ERROR RANKING] Formato incorrecto. Uso: /ranking general, /ranking yo o /ranking <user1> vs <user2>");
-            return;}
+            return;
+        }
 
-        String argumento = partes[1].trim();
         String subComando = argumento.split("\\s+")[0].toLowerCase();
-
         if (subComando.equals("general")) {
             enviarMensaje(RankingManager.generarRankingGeneral(displayName));
         } else if (subComando.equals("yo")) {
@@ -154,26 +188,8 @@ public class UnCliente implements Runnable {
         } else if (argumento.toLowerCase().contains("vs")) {
             procesarRankingDuelo(argumento);
         } else {
-            enviarMensaje("[ERROR RANKING] Subcomando no reconocido. Intenta: general, yo, o <user1> vs <user2>.");}
+            enviarMensaje("[ERROR RANKING] Subcomando no reconocido.");}
     }
-
-    private void procesarRankingDuelo(String dueloStr) throws IOException {
-        String[] jugadores = dueloStr.split("\\s+vs\\s+");
-
-        if (jugadores.length != 2) {
-            enviarMensaje("[ERROR RANKING] Formato de duelo incorrecto. Uso: /ranking <user1> vs <user2>");
-            return;}
-
-        String user1 = jugadores[0].trim();
-        String user2 = jugadores[1].trim();
-
-        if (user1.isEmpty() || user2.isEmpty()) {
-            enviarMensaje("[ERROR RANKING] Los nombres de usuario no pueden estar vacíos.");
-            return;}
-
-        enviarMensaje(RankingManager.generarRankingDuelo(user1, user2));
-    }
-
     private void manejarComandoAutenticacion(String comando) throws IOException {
         String[] partes = comando.split(" ", 3);
         if (partes.length != 3) {
@@ -182,6 +198,7 @@ public class UnCliente implements Runnable {
 
         String user = partes[1];
         String pass = partes[2];
+
         if (comando.startsWith("/register")) {
             procesarRegistro(user, pass);
         } else if (comando.startsWith("/login")) {
@@ -192,7 +209,8 @@ public class UnCliente implements Runnable {
         if (ClienteAuthManager.registrarUsuario(user, pass)) {
             establecerAutenticacion(user);
         } else {
-            enviarMensaje("[ERROR] El usuario '" + user + "' ya existe.");}
+            enviarMensaje("[ERROR] El usuario '" + user + "' ya existe.");
+        }
     }
 
     private void procesarLogin(String user, String pass) throws IOException {
@@ -210,6 +228,7 @@ public class UnCliente implements Runnable {
         String oldDisplayName = this.displayName;
         this.estaAutenticado = true;
         this.displayName = user;
+        this.accionesRealizadas = 0;
 
         ClienteManager.transferirCliente(oldDisplayName, this);
         GroupManager.asignarGrupoInicial(user, false);
@@ -221,12 +240,11 @@ public class UnCliente implements Runnable {
             enviarMensaje("[ERROR] Debes iniciar sesión para usar los comandos /block y /unblock.");
             return;}
 
-        String[] partes = comando.split(" ", 2);
-        if (partes.length != 2) {
+        String objetivo = MensajeUtil.obtenerArgumento(comando, 2);
+        if (objetivo == null) {
             enviarMensaje("[ERROR] Formato incorrecto. Uso: /comando <usuario_objetivo>");
             return;}
 
-        String objetivo = partes[1].trim();
         ejecutarAccionBloqueo(comando, objetivo);
     }
 
@@ -257,15 +275,13 @@ public class UnCliente implements Runnable {
         } else {
             enviarMensaje("[ADVERTENCIA] " + objetivo + " no estaba en tu lista de bloqueo.");}
     }
-
     private void manejarComandoJuego(String comando) throws IOException {
-        String[] partes = comando.split(" ", 2);
-        if (partes.length != 2) {
+        String objetivo = MensajeUtil.obtenerArgumento(comando, 2);
+        String accion = comando.split(" ")[0];
+
+        if (objetivo == null) {
             enviarMensaje("[ERROR GATO] Formato incorrecto. Uso: /comando <usuario_objetivo>");
             return;}
-
-        String objetivo = partes[1].trim();
-        String accion = partes[0];
 
         if (!estaAutenticado) {
             enviarMensaje("[ERROR GATO] Debes iniciar sesión para jugar.");
@@ -286,10 +302,8 @@ public class UnCliente implements Runnable {
     }
 
     private boolean esMovimientoGato(String mensaje) {
-        if (JuegoManager.obtenerPartida(displayName) == null) {
-            return false;}
-        Pattern pattern = Pattern.compile("^\\s*\\d+\\s+contra\\s+\\w+\\s*$");
-        return pattern.matcher(mensaje).matches();}
+        return JuegoManager.obtenerPartida(displayName) != null &&
+                Pattern.compile("^\\s*\\d+\\s+contra\\s+\\w+\\s*$").matcher(mensaje).matches();}
 
     private void manejarMovimientoGato(String mensaje) throws IOException {
         String[] partes = mensaje.trim().split("\\s+contra\\s+");
@@ -310,16 +324,49 @@ public class UnCliente implements Runnable {
             enviarMensaje("[ERROR GATO] La posición debe ser un número (0-8).");}
     }
     private void manejarMensajePublico(String mensaje) throws IOException {
-        if (!puedeEnviarMensaje()) {
-            enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado. Por favor, regístrate o inicia sesión.");
-            return;}
-        mensajesEnviados++;
         GroupManager.enviarMensajeGrupo(displayName, mensaje);
     }
 
-    private boolean puedeEnviarMensaje() {
-        return estaAutenticado || mensajesEnviados < LIMITE_MENSAJES;}
+    private void manejarMensajePrivado(String mensaje) throws IOException {
+        String mensajeCompleto = "[PRIVADO de " + displayName + "]: " + mensaje;
+        String[] partes = mensaje.substring(1).split(" ", 2);
 
+        if (partes.length < 2) {
+            enviarMensaje("[ERROR] Formato privado incorrecto. Uso: @<user1,user2> mensaje");
+            return;}
+
+        String[] destinatarios = partes[0].split(",");
+        enviarADestinatarios(destinatarios, mensajeCompleto);
+    }
+
+    private void enviarADestinatarios(String[] destinatarios, String mensaje) throws IOException {
+        for (String nombre : destinatarios) {
+            String nombreLimpio = nombre.trim();
+            UnCliente cliente = ClienteManager.obtenerClientePorNombre(nombreLimpio);
+
+            if (cliente != null && BlockListManager.estaBloqueado(cliente.displayName, this.displayName)) {
+                enviarMensaje("[ADVERTENCIA] No se pudo enviar mensaje a " + nombreLimpio + ". Te tiene bloqueado.");
+            } else if (cliente != null) {
+                cliente.enviarMensaje(mensaje);}
+        }
+    }
+
+    private void procesarRankingDuelo(String dueloStr) throws IOException {
+        String[] jugadores = dueloStr.split("\\s+vs\\s+");
+        if (jugadores.length != 2) {
+            enviarMensaje("[ERROR RANKING] Formato de duelo incorrecto. Uso: /ranking <user1> vs <user2>");
+            return;
+        }
+
+        String user1 = jugadores[0].trim();
+        String user2 = jugadores[1].trim();
+
+        if (user1.isEmpty() || user2.isEmpty()) {
+            enviarMensaje("[ERROR RANKING] Los nombres de usuario no pueden estar vacíos.");
+            return;}
+
+        enviarMensaje(RankingManager.generarRankingDuelo(user1, user2));
+    }
     private void enviarBroadcast(String mensaje) throws IOException {
         for (UnCliente cliente : ClienteManager.obtenerTodos().values()) {
             enviarSiNoEstaBloqueadoYNoEsRemitente(cliente, mensaje);}
@@ -333,45 +380,5 @@ public class UnCliente implements Runnable {
             return;}
 
         receptor.enviarMensaje(mensaje);
-    }
-
-    private void manejarMensajePrivado(String mensaje) throws IOException {
-        if (!puedeEnviarMensaje()) {
-            enviarMensaje("[ADVERTENCIA] Límite de " + LIMITE_MENSAJES + " mensajes alcanzado.");
-            return;}
-        mensajesEnviados++;
-
-        String mensajeCompleto = "[PRIVADO de " + displayName + "]: " + mensaje;
-        String[] partes = mensaje.substring(1).split(" ", 2);
-
-        if (partes.length < 2) {
-            enviarMensaje("[ERROR] Formato privado incorrecto. Uso: @<user1,user2> mensaje");
-            return;}
-
-        String[] destinatarios = partes[0].split(",");
-        enviarADestinatarios(destinatarios, mensajeCompleto);
-    }
-
-    private void enviarADestinatarios(String[] destinatarios, String mensaje) throws IOException {
-        boolean enviado = false;
-        for (String nombre : destinatarios) {
-            String nombreLimpio = nombre.trim();
-            UnCliente cliente = ClienteManager.obtenerClientePorNombre(nombreLimpio);
-            if (cliente != null && !BlockListManager.estaBloqueado(cliente.displayName, this.displayName)) {
-                cliente.enviarMensaje(mensaje);
-            } else if (cliente != null && BlockListManager.estaBloqueado(cliente.displayName, this.displayName)) {
-                enviarMensaje("[ADVERTENCIA] No se pudo enviar mensaje a " + nombreLimpio + ". Te tiene bloqueado.");
-            }
-        }
-        if (!enviado) {
-            enviarMensaje("[ADVERTENCIA] No se encontró o se pudo enviar el mensaje a ningún destinatario.");}
-    }
-
-
-    private void cerrarConexion() {
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();}
-        } catch (IOException e) {}
     }
 }
